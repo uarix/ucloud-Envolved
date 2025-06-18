@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ucloud-Evolved-Plus
 // @namespace    http://tampermonkey.net/
-// @version      0.40
+// @version      0.50
 // @description  主页作业显示所属课程，统一展示本学期所有课程，使用Office 365预览课件，增加通知显示数量，通知按时间排序，去除悬浮窗，解除复制限制，课件自动下载，批量下载，资源页展示全部下载按钮，更好的页面标题
 // @author       Quarix, Xyea
 // @match        https://ucloud.bupt.edu.cn/*
@@ -169,6 +169,40 @@
                 console.error('Storage set error:', e);
             }
         }
+
+        // 删除作业管理
+        static getDeletedHomeworks() {
+            return this.get('deletedHomeworks') || [];
+        }
+
+        static addDeletedHomework(assignmentId, assignmentData) {
+            const deleted = this.getDeletedHomeworks();
+            const existingIndex = deleted.findIndex(item => item.id === assignmentId);
+            
+            if (existingIndex === -1) {
+                deleted.push({
+                    id: assignmentId,
+                    data: assignmentData,
+                    deletedAt: new Date().toISOString()
+                });
+                this.set('deletedHomeworks', deleted);
+            }
+        }
+
+        static removeDeletedHomework(assignmentId) {
+            const deleted = this.getDeletedHomeworks();
+            const filtered = deleted.filter(item => item.id !== assignmentId);
+            this.set('deletedHomeworks', filtered);
+        }
+
+        static isHomeworkDeleted(assignmentId) {
+            const deleted = this.getDeletedHomeworks();
+            return deleted.some(item => item.id === assignmentId);
+        }
+
+        static clearDeletedHomeworks() {
+            this.set('deletedHomeworks', []);
+        }
     }
 
     // ===== 设置管理类 =====
@@ -176,6 +210,8 @@
         static defaults = {
             home: {
                 addHomeworkSource: true,
+                simplifyHomePage: false,
+                noConfirmDelete: false,
             },
             course: {
                 addBatchDownload: true,
@@ -1400,6 +1436,11 @@
                 document.title = '个人主页 - 教学云空间';
             }
 
+            // 简化主页功能
+            if (Settings.get('home', 'simplifyHomePage')) {
+                await this.simplifyHomePage();
+            }
+
             if (!Settings.get('home', 'addHomeworkSource')) return;
 
             try {
@@ -1411,6 +1452,44 @@
                 await this.createUnifiedHomeworkView(assignments);
             } catch (error) {
                 console.error('Handle home page error:', error);
+            }
+        }
+        
+        // 添加简化主页方法
+        async simplifyHomePage() {
+            try {
+                // 等待关键元素加载完成，确保能够找到它们
+                await Utils.wait(() => document.querySelector('.menu-nav.el-row') && document.querySelector('.home-right-container.home-inline-block'), 5000);
+
+                // 直接删除导航菜单元素
+                const menuNav = document.querySelector('.menu-nav.el-row');
+                if (menuNav) {
+                    menuNav.remove();
+                }
+
+                // 直接删除右侧访问历史面板元素
+                const rightContainer = document.querySelector('.home-right-container.home-inline-block');
+                if (rightContainer) {
+                    rightContainer.remove();
+                }
+
+                // 添加样式，将剩余内容居中显示
+                GM_addStyle(`
+                    /* 将父容器设为flex布局并居中 */
+                    .teacher-home-page {
+                        display: flex !important;
+                        justify-content: center !important;
+                    }
+                    /* 清除左侧容器的浮动，以便flex居中生效 */
+                    .home-left-container.home-inline-block {
+                        float: none !important;
+                    }
+                `);
+
+                console.log('已通过移除DOM元素的方式简化主页，并居中显示内容。');
+
+            } catch (error) {
+                console.error("简化主页失败：无法找到要删除的元素。", error);
             }
         }
 
@@ -1461,11 +1540,16 @@
                 // 从DOM中补充作业信息
                 const enrichedAssignments = await this.enrichAssignmentsFromDOM(assignments);
                 
+                // 过滤掉已删除的作业
+                const filteredAssignments = enrichedAssignments.filter(assignment => 
+                    !Storage.isHomeworkDeleted(assignment.activityId)
+                );
+                
                 // 获取所有作业和练习的ID
-                const taskIds = enrichedAssignments.map(x => x.activityId);
+                const taskIds = filteredAssignments.map(x => x.activityId);
                 
                 // 将siteName信息添加到assignments中
-                enrichedAssignments.forEach(assignment => {
+                filteredAssignments.forEach(assignment => {
                     if (assignment.siteName && !assignment.courseInfo) {
                         assignment.courseInfo = {
                             name: assignment.siteName,
@@ -1478,7 +1562,7 @@
                 const courseInfos = await API.searchCourses(taskIds);
 
                 // 创建统一作业视图
-                this.insertUnifiedHomeworkPanel(enrichedAssignments, courseInfos);
+                this.insertUnifiedHomeworkPanel(filteredAssignments, courseInfos);
             } catch (error) {
                 console.error('Create unified homework view error:', error);
                 // 如果创建失败，回退到原有方式
@@ -1582,6 +1666,15 @@
                     </div>
                     <div class="unified-homework-actions">
                         <div class="homework-count" id="homework-count">共 ${assignments.length} 项作业</div>
+                        <div class="trash-bin-info" id="trash-bin-btn" title="查看回收站">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="m19,6v14a2,2 0 0,1 -2,2H7a2,2 0 0,1 -2,-2V6m3,0V4a2,2 0 0,1 2,-2h4a2,2 0 0,1 2,2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                            <span id="trash-count">回收站</span>
+                        </div>
                     </div>
                 </div>
                 <div class="search-container">
@@ -1649,6 +1742,71 @@
                         });
                         
                         updateHomeworkCount(visibleCount);
+                    });
+                }
+
+                // 绑定删除按钮事件
+                const deleteButtons = unifiedPanel.querySelectorAll('.homework-delete-btn');
+                deleteButtons.forEach(button => {
+                    button.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        
+                        const assignmentId = button.getAttribute('data-assignment-id');
+                        const card = button.closest('.unified-homework-card');
+                        const title = card.querySelector('.homework-title').textContent;
+                        
+                        // 确认删除
+                        this.confirmDeleteHomework(title, () => {
+                            // 找到对应的作业数据
+                            const assignmentData = assignments.find(a => a.activityId === assignmentId);
+                            
+                            // 添加到删除列表
+                            Storage.addDeletedHomework(assignmentId, assignmentData);
+                            
+                            // 移除卡片
+                            card.remove();
+                            
+                            // 更新计数
+                            const remainingCards = unifiedPanel.querySelectorAll('.unified-homework-card');
+                            updateHomeworkCount(remainingCards.length);
+                            
+                            // 更新回收站计数
+                            const trashCountSpan = unifiedPanel.querySelector('#trash-count');
+                            const trashBinBtn = unifiedPanel.querySelector('#trash-bin-btn');
+                            if (trashCountSpan && trashBinBtn) {
+                                const deletedCount = Storage.getDeletedHomeworks().length;
+                                trashCountSpan.textContent = deletedCount > 0 ? `回收站 (${deletedCount})` : '回收站';
+                                
+                                // 更新样式类
+                                if (deletedCount > 0) {
+                                    trashBinBtn.classList.add('has-items');
+                                } else {
+                                    trashBinBtn.classList.remove('has-items');
+                                }
+                            }
+                            
+                            NotificationManager.show('已移除', `作业"${title}"已移入回收站`);
+                        });
+                    });
+                });
+
+                // 更新回收站计数并绑定事件
+                const trashBinBtn = unifiedPanel.querySelector('#trash-bin-btn');
+                const trashCountSpan = unifiedPanel.querySelector('#trash-count');
+                if (trashBinBtn && trashCountSpan) {
+                    const deletedCount = Storage.getDeletedHomeworks().length;
+                    trashCountSpan.textContent = deletedCount > 0 ? `回收站 (${deletedCount})` : '回收站';
+                    
+                    // 根据是否有内容添加样式类
+                    if (deletedCount > 0) {
+                        trashBinBtn.classList.add('has-items');
+                    } else {
+                        trashBinBtn.classList.remove('has-items');
+                    }
+                    
+                    trashBinBtn.addEventListener('click', () => {
+                        this.showTrashBin();
                     });
                 }
             }, 100);
@@ -1767,6 +1925,14 @@
                         <div class="homework-status-badge ${statusClass}">
                             ${typeLabel} - ${statusText}
                         </div>
+                        <button class="homework-delete-btn" 
+                                data-assignment-id="${assignment.activityId}" 
+                                title="移除作业">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"></line>
+                                <line x1="6" y1="6" x2="18" y2="18"></line>
+                            </svg>
+                        </button>
                     </div>
                 `;
             }).join('');
@@ -1833,12 +1999,47 @@
                     gap: 12px;
                 }
 
+                .trash-bin-info {
+                    font-size: 14px;
+                    color: #909399;
+                    background-color: #f5f7fa;
+                    padding: 4px 10px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    transition: all 0.3s;
+                    user-select: none;
+                }
+
+                .trash-bin-info:hover {
+                    background-color: #e4e7ed;
+                    color: #606266;
+                }
+
+                .trash-bin-info.has-items {
+                    color: #67c23a;
+                    background-color: #f0f9ff;
+                }
+
+                .trash-bin-info.has-items:hover {
+                    background-color: #e1f5fe;
+                    color: #5ba832;
+                }
+
                 .homework-count {
                     font-size: 14px;
                     color: #909399;
                     background-color: #f5f7fa;
                     padding: 4px 10px;
                     border-radius: 4px;
+                }
+
+                .homework-count,
+                .trash-bin-info {
+                    font-weight: 500;
+                    letter-spacing: 0.02em;
                 }
 
                 .search-container {
@@ -1974,6 +2175,35 @@
                     border: none;
                 }
 
+                .homework-delete-btn {
+                    position: absolute;
+                    bottom: 8px;
+                    right: 8px;
+                    background: rgba(255, 255, 255, 0.9);
+                    border: 1px solid #dcdfe6;
+                    border-radius: 50%;
+                    width: 24px;
+                    height: 24px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    opacity: 0;
+                    transition: all 0.3s;
+                    color: #909399;
+                    z-index: 10;
+                }
+
+                .unified-homework-card:hover .homework-delete-btn {
+                    opacity: 1;
+                }
+
+                .homework-delete-btn:hover {
+                    background: #f56c6c;
+                    color: white;
+                    border-color: #f56c6c;
+                }
+
 
 
                 /* 现代化滚动条样式 */
@@ -2048,6 +2278,593 @@
             
             // 在当前页面跳转，模拟原始行为
             window.location.href = url;
+        }
+
+        // 确认删除作业
+        confirmDeleteHomework(title, callback) {
+            // 检查是否设置了不再提示
+            if (Settings.get('home', 'noConfirmDelete')) {
+                callback();
+                return;
+            }
+
+            // 创建自定义确认对话框
+            const modal = document.createElement('div');
+            modal.className = 'delete-confirm-modal';
+            modal.innerHTML = `
+                <div class="delete-confirm-overlay"></div>
+                <div class="delete-confirm-content">
+                    <div class="delete-confirm-header">
+                        <h3>🗑️ 移除作业</h3>
+                    </div>
+                    <div class="delete-confirm-body">
+                        <p>确定要将作业"<strong>${title}</strong>"移入回收站吗？</p>
+                        <div class="delete-confirm-options">
+                            <label class="delete-confirm-checkbox">
+                                <input type="checkbox" id="no-confirm-checkbox">
+                                <span>不再提示此确认</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="delete-confirm-actions">
+                        <button class="cancel-delete-btn">取消</button>
+                        <button class="confirm-delete-btn">移入回收站</button>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            this.addDeleteConfirmStyles();
+
+            // 绑定事件
+            this.bindDeleteConfirmEvents(modal, callback);
+
+            // 显示动画
+            setTimeout(() => {
+                modal.classList.add('visible');
+            }, 10);
+        }
+
+        addDeleteConfirmStyles() {
+            if (document.getElementById('delete-confirm-styles')) return;
+
+            const styles = document.createElement('style');
+            styles.id = 'delete-confirm-styles';
+            styles.textContent = `
+                .delete-confirm-modal {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    z-index: 10001;
+                    opacity: 0;
+                    transition: opacity 0.3s ease;
+                }
+
+                .delete-confirm-modal.visible {
+                    opacity: 1;
+                }
+
+                .delete-confirm-overlay {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.5);
+                    cursor: pointer;
+                }
+
+                .delete-confirm-content {
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                    width: 400px;
+                    max-width: 90vw;
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
+                }
+
+                .delete-confirm-header {
+                    padding: 20px 24px 16px;
+                    border-bottom: 1px solid #ebeef5;
+                    background: #fafbfc;
+                }
+
+                .delete-confirm-header h3 {
+                    margin: 0;
+                    font-size: 18px;
+                    color: #303133;
+                }
+
+                .delete-confirm-body {
+                    padding: 20px 24px;
+                    background: white;
+                }
+
+                .delete-confirm-body p {
+                    margin: 0 0 16px 0;
+                    font-size: 14px;
+                    color: #606266;
+                    line-height: 1.5;
+                }
+
+                .delete-confirm-options {
+                    margin-top: 16px;
+                }
+
+                .delete-confirm-checkbox {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    font-size: 13px;
+                    color: #909399;
+                    cursor: pointer;
+                    user-select: none;
+                }
+
+                .delete-confirm-checkbox input[type="checkbox"] {
+                    margin: 0;
+                    cursor: pointer;
+                }
+
+                .delete-confirm-actions {
+                    padding: 16px 24px 20px;
+                    border-top: 1px solid #ebeef5;
+                    display: flex;
+                    gap: 12px;
+                    justify-content: flex-end;
+                    background: #fafbfc;
+                }
+
+                .cancel-delete-btn, .confirm-delete-btn {
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    font-weight: 500;
+                    transition: all 0.3s;
+                    outline: none;
+                }
+
+                .cancel-delete-btn {
+                    background: #f5f7fa;
+                    color: #606266;
+                    border: 1px solid #dcdfe6;
+                }
+
+                .cancel-delete-btn:hover {
+                    background: #e4e7ed;
+                    border-color: #c0c4cc;
+                }
+
+                .confirm-delete-btn {
+                    background: #f56c6c;
+                    color: white;
+                }
+
+                .confirm-delete-btn:hover {
+                    background: #e55353;
+                }
+            `;
+            document.head.appendChild(styles);
+        }
+
+        bindDeleteConfirmEvents(modal, callback) {
+            const closeModal = () => {
+                modal.classList.remove('visible');
+                setTimeout(() => {
+                    if (modal.parentNode) {
+                        modal.parentNode.removeChild(modal);
+                    }
+                }, 300);
+            };
+
+            // 点击遮罩层关闭
+            modal.querySelector('.delete-confirm-overlay').addEventListener('click', closeModal);
+
+            // 取消按钮
+            modal.querySelector('.cancel-delete-btn').addEventListener('click', closeModal);
+
+            // 确认按钮
+            modal.querySelector('.confirm-delete-btn').addEventListener('click', () => {
+                const noConfirmCheckbox = modal.querySelector('#no-confirm-checkbox');
+                
+                // 如果选中了"不再提示"，保存设置
+                if (noConfirmCheckbox.checked) {
+                    Settings.set('home', 'noConfirmDelete', true);
+                    NotificationManager.show('设置已保存', '今后删除作业将不再显示确认提示');
+                }
+                
+                closeModal();
+                callback();
+            });
+
+            // ESC键关闭
+            const handleKeyPress = (e) => {
+                if (e.key === 'Escape') {
+                    closeModal();
+                    document.removeEventListener('keydown', handleKeyPress);
+                }
+            };
+            document.addEventListener('keydown', handleKeyPress);
+        }
+
+        // 显示回收站
+        showTrashBin() {
+            const deletedHomeworks = Storage.getDeletedHomeworks();
+
+            // 创建回收站模态框
+            const modal = document.createElement('div');
+            modal.className = 'trash-bin-modal';
+            modal.innerHTML = `
+                <div class="trash-bin-overlay"></div>
+                <div class="trash-bin-content">
+                    <div class="trash-bin-header">
+                        <h3>🗑️ 作业回收站</h3>
+                        <div class="trash-bin-actions">
+                            <button class="clear-all-btn" ${deletedHomeworks.length === 0 ? 'disabled' : ''}>清空回收站 (${deletedHomeworks.length})</button>
+                            <button class="close-trash-btn">×</button>
+                        </div>
+                    </div>
+                    <div class="trash-bin-body">
+                        ${this.generateTrashBinHTML(deletedHomeworks)}
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(modal);
+            this.addTrashBinStyles();
+
+            // 绑定事件
+            this.bindTrashBinEvents(modal, deletedHomeworks);
+
+            // 显示动画
+            setTimeout(() => {
+                modal.classList.add('visible');
+            }, 10);
+        }
+
+        generateTrashBinHTML(deletedHomeworks) {
+            if (deletedHomeworks.length === 0) {
+                return '<div class="empty-trash">🗑️ 回收站为空<br><small>删除的作业会暂时保存在这里</small></div>';
+            }
+
+            return deletedHomeworks.map(item => {
+                const assignment = item.data;
+                const deletedDate = new Date(item.deletedAt).toLocaleString('zh-CN');
+                const title = assignment.title || assignment.activityName || '未知作业';
+                const isExercise = assignment.type === 4;
+                const typeLabel = isExercise ? '练习' : '作业';
+
+                return `
+                    <div class="trash-item" data-assignment-id="${item.id}">
+                        <div class="trash-item-info">
+                            <h4 class="trash-item-title">${title}</h4>
+                            <div class="trash-item-meta">
+                                <span class="trash-item-type">${typeLabel}</span>
+                                <span class="trash-item-date">删除时间: ${deletedDate}</span>
+                            </div>
+                        </div>
+                        <div class="trash-item-actions">
+                            <button class="restore-btn" data-assignment-id="${item.id}" title="恢复">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                                </svg>
+                                恢复
+                            </button>
+                            <button class="permanent-delete-btn" data-assignment-id="${item.id}" title="永久删除">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3,6 5,6 21,6"></polyline>
+                                    <path d="m19,6v14a2,2 0 0,1 -2,2H7a2,2 0 0,1 -2,-2V6m3,0V4a2,2 0 0,1 2,-2h4a2,2 0 0,1 2,2v2"></path>
+                                    <line x1="10" y1="11" x2="10" y2="17"></line>
+                                    <line x1="14" y1="11" x2="14" y2="17"></line>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        addTrashBinStyles() {
+            if (document.getElementById('trash-bin-styles')) return;
+
+            const styles = document.createElement('style');
+            styles.id = 'trash-bin-styles';
+            styles.textContent = `
+                .trash-bin-modal {
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    z-index: 10000;
+                    opacity: 0;
+                    transition: opacity 0.3s ease;
+                }
+
+                .trash-bin-modal.visible {
+                    opacity: 1;
+                }
+
+                .trash-bin-overlay {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0, 0, 0, 0.5);
+                    cursor: pointer;
+                }
+
+                .trash-bin-content {
+                    position: absolute;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    background: white;
+                    border-radius: 12px;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+                    width: 600px;
+                    max-width: 90vw;
+                    max-height: 80vh;
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
+                }
+
+                .trash-bin-header {
+                    padding: 20px 24px 16px;
+                    border-bottom: 1px solid #ebeef5;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    background: #fafbfc;
+                }
+
+                .trash-bin-header h3 {
+                    margin: 0;
+                    font-size: 18px;
+                    color: #303133;
+                }
+
+                .trash-bin-actions {
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                }
+
+                .clear-all-btn {
+                    background: #f56c6c;
+                    color: white;
+                    border: none;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    transition: all 0.3s;
+                }
+
+                .clear-all-btn:hover:not(:disabled) {
+                    background: #e55353;
+                }
+
+                .clear-all-btn:disabled {
+                    background: #c0c4cc;
+                    cursor: not-allowed;
+                }
+
+                .close-trash-btn {
+                    background: none;
+                    border: none;
+                    font-size: 24px;
+                    color: #909399;
+                    cursor: pointer;
+                    padding: 0;
+                    width: 30px;
+                    height: 30px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    border-radius: 50%;
+                    transition: all 0.3s;
+                }
+
+                .close-trash-btn:hover {
+                    background: #f0f0f0;
+                    color: #606266;
+                }
+
+                .trash-bin-body {
+                    padding: 16px 24px 24px;
+                    overflow-y: auto;
+                    flex: 1;
+                    background: white;
+                }
+
+                .empty-trash {
+                    text-align: center;
+                    color: #909399;
+                    padding: 40px;
+                    font-size: 16px;
+                }
+
+                .trash-item {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 12px 16px;
+                    border: 1px solid #ebeef5;
+                    border-radius: 8px;
+                    margin-bottom: 12px;
+                    background: #fafbfc;
+                    transition: all 0.3s;
+                }
+
+                .trash-item:hover {
+                    background: #f0f2f5;
+                    border-color: #c0c4cc;
+                }
+
+                .trash-item-info {
+                    flex: 1;
+                }
+
+                .trash-item-title {
+                    margin: 0 0 6px 0;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: #303133;
+                }
+
+                .trash-item-meta {
+                    display: flex;
+                    gap: 12px;
+                    align-items: center;
+                    font-size: 12px;
+                    color: #909399;
+                }
+
+                .trash-item-type {
+                    background: #e4e7ed;
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    font-weight: 500;
+                }
+
+                .trash-item-actions {
+                    display: flex;
+                    gap: 8px;
+                }
+
+                .restore-btn, .permanent-delete-btn {
+                    border: none;
+                    padding: 6px 10px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 12px;
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                    transition: all 0.3s;
+                }
+
+                .restore-btn {
+                    background: #67c23a;
+                    color: white;
+                }
+
+                .restore-btn:hover {
+                    background: #5ba832;
+                }
+
+                .permanent-delete-btn {
+                    background: #f56c6c;
+                    color: white;
+                }
+
+                .permanent-delete-btn:hover {
+                    background: #e55353;
+                }
+            `;
+            document.head.appendChild(styles);
+        }
+
+        bindTrashBinEvents(modal, deletedHomeworks) {
+            // 关闭模态框
+            const closeModal = () => {
+                modal.classList.remove('visible');
+                setTimeout(() => {
+                    if (modal.parentNode) {
+                        modal.parentNode.removeChild(modal);
+                    }
+                }, 300);
+            };
+
+            // 点击遮罩层关闭
+            modal.querySelector('.trash-bin-overlay').addEventListener('click', closeModal);
+            
+            // 点击关闭按钮
+            modal.querySelector('.close-trash-btn').addEventListener('click', closeModal);
+
+            // ESC键关闭
+            const handleKeyPress = (e) => {
+                if (e.key === 'Escape') {
+                    closeModal();
+                    document.removeEventListener('keydown', handleKeyPress);
+                }
+            };
+            document.addEventListener('keydown', handleKeyPress);
+
+            // 清空回收站
+            const clearAllBtn = modal.querySelector('.clear-all-btn');
+            if (clearAllBtn) {
+                clearAllBtn.addEventListener('click', () => {
+                    if (confirm('确定要清空回收站吗？此操作不可恢复！')) {
+                        Storage.clearDeletedHomeworks();
+                        NotificationManager.show('已清空', '回收站已清空');
+                        closeModal();
+                    }
+                });
+            }
+
+            // 恢复作业
+            modal.querySelectorAll('.restore-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const assignmentId = btn.getAttribute('data-assignment-id');
+                    const trashItem = btn.closest('.trash-item');
+                    const title = trashItem.querySelector('.trash-item-title').textContent;
+                    
+                    Storage.removeDeletedHomework(assignmentId);
+                    trashItem.remove();
+                    
+                    NotificationManager.show('已恢复', `作业"${title}"已恢复`);
+                    
+                    // 更新按钮数量显示和状态
+                    const remainingItems = modal.querySelectorAll('.trash-item');
+                    const clearBtn = modal.querySelector('.clear-all-btn');
+                    clearBtn.textContent = `清空回收站 (${remainingItems.length})`;
+                    
+                    if (remainingItems.length === 0) {
+                        modal.querySelector('.trash-bin-body').innerHTML = '<div class="empty-trash">🗑️ 回收站为空<br><small>删除的作业会暂时保存在这里</small></div>';
+                        clearBtn.disabled = true;
+                    }
+                });
+            });
+
+            // 永久删除
+            modal.querySelectorAll('.permanent-delete-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const assignmentId = btn.getAttribute('data-assignment-id');
+                    const trashItem = btn.closest('.trash-item');
+                    const title = trashItem.querySelector('.trash-item-title').textContent;
+                    
+                    if (confirm(`确定要永久删除作业"${title}"吗？此操作不可恢复！`)) {
+                        Storage.removeDeletedHomework(assignmentId);
+                        trashItem.remove();
+                        
+                        NotificationManager.show('已删除', `作业"${title}"已永久删除`);
+                        
+                        // 更新按钮数量显示和状态
+                        const remainingItems = modal.querySelectorAll('.trash-item');
+                        const clearBtn = modal.querySelector('.clear-all-btn');
+                        clearBtn.textContent = `清空回收站 (${remainingItems.length})`;
+                        
+                        if (remainingItems.length === 0) {
+                            modal.querySelector('.trash-bin-body').innerHTML = '<div class="empty-trash">🗑️ 回收站为空<br><small>删除的作业会暂时保存在这里</small></div>';
+                            clearBtn.disabled = true;
+                        }
+                    }
+                });
+            });
         }
 
         // ===== 辅助方法实现 =====
@@ -2941,6 +3758,41 @@
                     border-color: #409EFF;
                     box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.12);
                 }
+
+                #yzHelper-settings .action-btn {
+                    background: #f56c6c;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    transition: all 0.3s;
+                    outline: none;
+                }
+
+                #yzHelper-settings .action-btn:hover {
+                    background: #e55353;
+                }
+
+                #yzHelper-settings .action-btn:disabled {
+                    background: #c0c4cc;
+                    cursor: not-allowed;
+                }
+
+                #yzHelper-settings .action-btn.secondary {
+                    background: #409EFF;
+                    margin-left: 10px;
+                }
+
+                #yzHelper-settings .action-btn.secondary:hover {
+                    background: #337ecc;
+                }
+
+                #yzHelper-settings .setting-toggle {
+                    flex-wrap: wrap;
+                    gap: 10px;
+                }
             `);
 
             // 创建设置按钮
@@ -2957,7 +3809,7 @@
             const header = `
                 <div id="yzHelper-header">
                     <span>云邮教学空间助手</span>
-                    <span id="yzHelper-version">v0.40</span>
+                    <span id="yzHelper-version">v0.50</span>
                 </div>
             `;
 
@@ -3004,6 +3856,39 @@
                                 </div>
                                 <div class="setting-description" id="description-home_addHomeworkSource">
                                     将所有待办作业在一个界面中统一显示，包含课程来源、截止时间、紧急程度等信息，无需翻页查看。支持快速跳转到作业详情页面。
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <div class="setting-toggle">
+                                    <label class="switch">
+                                        <input type="checkbox" id="home_simplifyHomePage" ${Settings.get('home', 'simplifyHomePage') ? 'checked' : ''}>
+                                        <span class="slider"></span>
+                                    </label>
+                                    <span class="setting-label" data-for="description-home_simplifyHomePage">简化主页界面</span>
+                                </div>
+                                <div class="setting-description" id="description-home_simplifyHomePage">
+                                    隐藏顶部导航菜单和右侧访问历史面板，使界面更加简洁，专注于作业和课程内容。
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <div class="setting-toggle">
+                                    <label class="switch">
+                                        <input type="checkbox" id="home_noConfirmDelete" ${Settings.get('home', 'noConfirmDelete') ? 'checked' : ''}>
+                                        <span class="slider"></span>
+                                    </label>
+                                    <span class="setting-label" data-for="description-home_noConfirmDelete">删除作业时不再提示</span>
+                                </div>
+                                <div class="setting-description" id="description-home_noConfirmDelete">
+                                    删除作业时跳过确认对话框，直接移入回收站。可以提高操作效率，但需要小心操作。
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <div class="setting-toggle">
+                                    <button id="clear-deleted-homeworks-btn" class="action-btn">清空作业回收站</button>
+                                    <button id="reset-confirm-setting-btn" class="action-btn secondary">重新启用删除确认</button>
+                                </div>
+                                <div class="setting-description visible">
+                                    清空所有已删除的作业，释放存储空间。此操作不可恢复。重新启用删除确认可以恢复删除作业时的提示对话框。
                                 </div>
                             </div>
                         </div>
@@ -3317,6 +4202,46 @@
                     NotificationManager.show("设置已保存", "刷新页面后生效");
                 }, 300);
             });
+
+            // 清空作业回收站按钮事件
+            const clearDeletedBtn = document.getElementById("clear-deleted-homeworks-btn");
+            if (clearDeletedBtn) {
+                const updateButtonState = () => {
+                    const deletedCount = Storage.getDeletedHomeworks().length;
+                    clearDeletedBtn.textContent = `清空作业回收站 (${deletedCount})`;
+                    clearDeletedBtn.disabled = deletedCount === 0;
+                };
+
+                updateButtonState();
+
+                clearDeletedBtn.addEventListener("click", () => {
+                    const deletedHomeworks = Storage.getDeletedHomeworks();
+                    if (deletedHomeworks.length === 0) {
+                        NotificationManager.show("回收站为空", "没有需要清空的内容");
+                        return;
+                    }
+
+                    if (confirm(`确定要清空回收站中的 ${deletedHomeworks.length} 个作业吗？此操作不可恢复！`)) {
+                        Storage.clearDeletedHomeworks();
+                        updateButtonState();
+                        NotificationManager.show("已清空", "作业回收站已清空");
+                    }
+                });
+            }
+
+            // 重新启用删除确认按钮事件
+            const resetConfirmBtn = document.getElementById("reset-confirm-setting-btn");
+            if (resetConfirmBtn) {
+                resetConfirmBtn.addEventListener("click", () => {
+                    Settings.set('home', 'noConfirmDelete', false);
+                    // 更新界面上的复选框状态
+                    const checkbox = document.getElementById("home_noConfirmDelete");
+                    if (checkbox) {
+                        checkbox.checked = false;
+                    }
+                    NotificationManager.show("设置已重置", "删除作业时将重新显示确认提示");
+                });
+            }
         }
 
         registerMenuCommands() {
