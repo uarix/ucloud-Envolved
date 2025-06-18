@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ucloud-Evolved-Plus
 // @namespace    http://tampermonkey.net/
-// @version      0.33
+// @version      0.40
 // @description  主页作业显示所属课程，统一展示本学期所有课程，使用Office 365预览课件，增加通知显示数量，通知按时间排序，去除悬浮窗，解除复制限制，课件自动下载，批量下载，资源页展示全部下载按钮，更好的页面标题
 // @author       Quarix, Xyea
 // @match        https://ucloud.bupt.edu.cn/*
@@ -1100,7 +1100,13 @@
             // 监听页面变化，防止单页应用导航变化不触发刷新
             const observer = new MutationObserver(
                 Utils.debounce(() => {
-                    if (document.querySelector('.my-lesson-section') && 
+                    // 增加URL检查，确保只在课程页面才处理
+                    const isStillCoursePage = location.href.includes('uclass/index.html#/student') || 
+                                             location.href.includes('uclass/#/student') ||
+                                             location.href.includes('uclass/index.html#/') ||
+                                             location.href.includes('uclass/#/');
+                    
+                    if (isStillCoursePage && document.querySelector('.my-lesson-section') && 
                         !document.getElementById('enhanced-courses-container')) {
                         this.handleCoursesPage();
                     }
@@ -1717,7 +1723,7 @@
                         if (timeDiff < 0) {
                             statusClass = 'overdue';
                             statusText = '已逾期';
-                        } else if (timeDiff < 7 * 60 * 60 * 1000) {
+                        } else if (timeDiff < 72 * 60 * 60 * 1000) {
                             statusClass = 'urgent';
                             statusText = '即将到期';
                         }
@@ -2951,7 +2957,7 @@
             const header = `
                 <div id="yzHelper-header">
                     <span>云邮教学空间助手</span>
-                    <span id="yzHelper-version">v0.32</span>
+                    <span id="yzHelper-version">v0.40</span>
                 </div>
             `;
 
@@ -3342,11 +3348,32 @@
                 return;
             }
 
-            // 等待页面完全加载，使用更长的超时时间和更严格的检测
+            // 增加更严格的页面检查，确保真正在课程页面上
+            const isReallyCoursePage = location.href.includes('uclass/index.html#/student') || 
+                                       location.href.includes('uclass/#/student') ||
+                                       location.href.includes('uclass/index.html#/') ||
+                                       location.href.includes('uclass/#/');
+            
+            // 检查是否为通知页面
+            const isNotificationPage = location.href.includes('notice_fullpage') ||
+                                      location.href.includes('set/notice');
+                                      
+            if (!isReallyCoursePage || isNotificationPage) {
+                return;
+            }
+
+            // 优先检查DOM中是否存在课程相关元素，不存在则直接返回
+            if (!document.querySelector('.my-lesson-section') && 
+                !document.querySelector('.el-carousel__item')) {
+                console.log('未检测到课程页面DOM元素，跳过处理');
+                return;
+            }
+
+            // 后续代码不变...
             let lessonSection = null;
             try {
-                // 先尝试等待.my-lesson-section加载
-                lessonSection = await Utils.wait(() => document.querySelector('.my-lesson-section'), 8000);
+                // 修改等待超时时间，缩短等待时间避免长时间阻塞
+                lessonSection = await Utils.wait(() => document.querySelector('.my-lesson-section'), 3000);
                 
                 // 再等待轮播项加载
                 const carouselItems = await Utils.wait(() => {
@@ -3354,12 +3381,12 @@
                     return items && items.length > 0 ? items : null;
                 }, 8000);
             } catch (e) {
+                // 只在真正需要的页面上显示错误
                 console.error('等待页面元素超时:', e);
-                NotificationManager.show('加载超时', '无法找到课程元素，请刷新页面重试', 'error');
                 return;
             }
-
-            // 额外等待时间确保动态内容加载完毕
+            
+            // 其余逻辑保持不变
             await Utils.sleep(1000);
 
             try {
